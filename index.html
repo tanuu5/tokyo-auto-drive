@@ -480,14 +480,25 @@ function genPlan(i){
 }
 function planAt(i){if(i<0)i=0;while(plans.length<=i)genPlan(plans.length);return plans[i];}
 // 信号：主道路 青18s→黄3s→赤19s（横道は青13s）
-function sigMain(p,t){const c=((t+p.offset)%40+40)%40;return c<18?'G':c<21?'Y':'R';}
-function sigCross(p,t){const c=((t+p.offset)%40+40)%40;return c<23?'R':c<36?'G':c<38.5?'Y':'R';}
+// 信号：主道路 青16s→黄3s→赤＋直進・左折矢印6s→全赤2s／横道 青13s→黄3s→全赤2s（1周45秒）
+const CYC=45,BOX=20.6;
+function cyc(p,t){return ((t+p.offset)%CYC+CYC)%CYC;}
+function sigMain(p,t){const c=cyc(p,t);return c<16?'G':c<19?'Y':c<25?'A':'R';}
+function sigCross(p,t){const c=cyc(p,t);return c<27?'R':c<40?'G':c<43?'Y':'R';}
+// 交差方向が青になるまでの残り秒数
+function tConflict(p,t,axis){const c=cyc(p,t);return axis==='main'?(c<27?27-c:0):(c>=27?CYC-c:0);}
 
 /* ============================================================
    区画（チャンク）生成
    ============================================================ */
 const chunks=new Map();
 const CIRC=new THREE.CircleGeometry(.15,16);
+const ACIRC=new THREE.CircleGeometry(.13,16);
+// 矢印（←・↑・→）
+const ARROW_ON=[],ARROW_OFF=[];
+[-Math.PI/2,0,Math.PI/2].forEach(rot=>{const c=mk(64,64),g=c.getContext('2d');g.fillStyle='#0c0f12';g.fillRect(0,0,64,64);
+  g.translate(32,32);g.rotate(rot);g.fillStyle='#ffffff';g.beginPath();g.moveTo(0,-24);g.lineTo(16,-4);g.lineTo(6,-4);g.lineTo(6,22);g.lineTo(-6,22);g.lineTo(-6,-4);g.lineTo(-16,-4);g.closePath();g.fill();
+  const t=tex(c);ARROW_ON.push(new THREE.MeshBasicMaterial({map:t,color:new THREE.Color(.2,1.6,1.25)}));ARROW_OFF.push(new THREE.MeshBasicMaterial({map:t,color:new THREE.Color(.09,.1,.11)}));});
 const trainGeo=(function(){const list=[];for(let k=0;k<10;k++){const g=new THREE.BoxGeometry(19.6,3.4,2.9);g.translate(k*20-90,0,0);list.push(g);}return mergeGeos(list);})();
 
 function buildChunk(i){
@@ -654,7 +665,10 @@ function buildChunk(i){
     function head(x,z,ry,key){B.box(1.42,.44,.3,x,5.6,z,'#5b6066',ry);B.box(1.5,.06,.36,x,5.85,z,'#5b6066',ry);
       const lamps=[];for(let k=0;k<3;k++){const lx=(k-1)*.44,lz=.16;const wx=x+lx*Math.cos(ry)+lz*Math.sin(ry),wz=z-lx*Math.sin(ry)+lz*Math.cos(ry);
         const m=new THREE.Mesh(CIRC,MAT.sigOff);m.position.set(wx,5.6,wz);m.rotation.y=ry;m.userData.shared=true;group.add(m);lamps.push(m);}
-      ix.heads.push({key,lamps,ry});}
+      let arrows=null;if(key==='main'){B.box(1.42,.34,.26,x,5.2,z,'#5b6066',ry);arrows=[];
+        for(let k=0;k<3;k++){const lx=(k-1)*.44,lz=.14;const wx=x+lx*Math.cos(ry)+lz*Math.sin(ry),wz=z-lx*Math.sin(ry)+lz*Math.cos(ry);
+          const m=new THREE.Mesh(ACIRC,ARROW_OFF[k]);m.position.set(wx,5.2,wz);m.rotation.y=ry;m.userData.shared=true;group.add(m);arrows.push(m);}}
+      ix.heads.push({key,lamps,ry,arrows});}
     function platePut(x,z,ry){const m=new THREE.Mesh(plateGeo,plate);m.position.set(x,6.45,z);m.rotation.y=ry;group.add(m);}
     // 自車側（奥の左）
     B.cyl(.13,6.4,-6.4,3.2,zc-7.4,'#80868c');B.box(5.4,.14,.14,-3.8,5.95,zc-7.4,'#80868c');head(-2.2,zc-7.4,0,'main');platePut(-4.6,zc-7.38,0);
@@ -698,7 +712,7 @@ function buildChunk(i){
   scene.add(group);
   return chunk;
 }
-function disposeChunk(c){scene.remove(c.group);c.group.traverse(o=>{if(o.geometry&&!o.userData.shared&&o.geometry!==CIRC&&o.geometry!==trainGeo)o.geometry.dispose();});c.mats.forEach(m=>m.dispose());c.texs.forEach(t=>t.dispose());}
+function disposeChunk(c){scene.remove(c.group);c.group.traverse(o=>{if(o.geometry&&!o.userData.shared&&o.geometry!==CIRC&&o.geometry!==ACIRC&&o.geometry!==trainGeo)o.geometry.dispose();});c.mats.forEach(m=>m.dispose());c.texs.forEach(t=>t.dispose());}
 
 /* ============================================================
    空・遠景
@@ -814,7 +828,7 @@ const dyn=(function(){const g=new THREE.BufferGeometry();const pos=new Float32Ar
   const o={n:0,push(x,y,z,r,gg,b,s,k){if(this.n>=DYN_N)return;const i=this.n++;pos[i*3]=x;pos[i*3+1]=y;pos[i*3+2]=z;col[i*3]=r;col[i*3+1]=gg;col[i*3+2]=b;size[i]=s;kind[i]=k;},
     commit(){g.setDrawRange(0,this.n);['position','gcolor','size','kind'].forEach(a=>g.attributes[a].needsUpdate=true);}};return o;})();
 const C_HEAD=lin('#fff4e2'),C_TAIL=lin('#ff1a14'),C_TAXI=lin('#ffe9a8');
-const SIG_COL={G:lin('#35ffd0'),Y:lin('#ffc21a'),R:lin('#ff3322')};
+const SIG_COL={G:lin('#35ffd0'),Y:lin('#ffc21a'),R:lin('#ff3322')};SIG_COL.A=SIG_COL.R;
 
 /* ============================================================
    歩行者
@@ -886,16 +900,39 @@ function updateChunks(all){
    ============================================================ */
 function nextIX(z,dir){const i0=Math.floor(-z/L);
   for(let k=-1;k<14;k++){const i=dir<0?i0+k:i0-k;if(i<0)continue;const p=planAt(i);if(!p.hasX)continue;const zc=-(i+.5)*L;const s=zc+(dir<0?10.3:-10.3);const dist=dir<0?z-s:s-z;if(dist>-.3)return {p,zc,dist};}return null;}
-function mustStop(state,dist,v){if(state==='G'||dist<0)return false;if(state==='Y')return dist>v*v/(2*4.2)+1.5;return v*v/(2*Math.max(dist,.1))<7;}
-function drive(v,dt,leader,leaderDist,stopDist){
-  let vd=v.vmax;
-  if(stopDist!=null)vd=Math.min(vd,Math.sqrt(Math.max(0,2*2.6*(stopDist-1.2))));
-  if(leader){const gap=leaderDist-(v.len+leader.len)/2-2.2;vd=Math.min(vd,Math.max(0,Math.min(Math.sqrt(2*3.2*Math.max(0,gap)),leader.v+gap*.4)));}
-  let a=clamp((vd-v.v)*1.5,-6.5,1.9);v.v=Math.max(0,v.v+a*dt);if(vd<.05&&v.v<.25)v.v=0;v.a=a;
-  v.brake=a<-.5||(v.v<.3&&vd<.3);
+// 交差点の中に、交差する向きの車がいるか
+function boxBusy(zc,axis){
+  if(axis==='main'){for(const o of vehicles){if(!o.active||!o.lane||o.lane[0]!=='x'||o.ix.zc!==zc)continue;if(Math.abs(o.x)-o.len/2<10.3)return true;}return false;}
+  const mains=[ego];for(const o of vehicles){if(o.active&&(o.lane==='same'||o.lane==='opp'))mains.push(o);}
+  for(const o of mains){if(Math.abs(o.z-zc)-o.len/2<10.3)return true;}return false;}
+// 停止線で止まるべきなら停止線までの距離、進むならnull
+function signalStop(v,ix,dist,axis){
+  const zc=ix.zc;
+  if(dist<0)return null;
+  if(v.commit===zc&&v.v<3)v.commit=null;
+  if(v.commit===zc){return (boxBusy(zc,axis)&&dist>.5)?dist:null;}
+  const st=axis==='main'?sigMain(ix.p,simT):sigCross(ix.p,simT);
+  const go=axis==='main'?(st==='G'||st==='A'):st==='G';
+  const canStop=dist>v.v*v.v/(2*4.5)+.5;
+  let proceed;
+  if(go){const tc=tConflict(ix.p,simT,axis);const tClear=(dist+BOX+v.len)/Math.max(v.v,2.5);proceed=tClear<tc-.8||!canStop;}
+  else if(st==='Y')proceed=!canStop;
+  else proceed=false;
+  if(proceed&&boxBusy(zc,axis))proceed=false;
+  if(proceed){if(!canStop)v.commit=zc;return null;}
+  return dist;
 }
-function spawnSame(v,zAt){v.active=true;v.lane='same';v.dir=[0,-1];v.x=-LANE;v.z=zAt;v.vmax=7+Math.random()*6;v.v=v.vmax*.8;v.mesh.visible=true;v.mesh.rotation.y=0;}
-function spawnOpp(v,zAt){v.active=true;v.lane='opp';v.dir=[0,1];v.x=LANE;v.z=zAt;v.vmax=8+Math.random()*6;v.v=v.vmax;v.mesh.visible=true;v.mesh.rotation.y=Math.PI;}
+// IDM（Intelligent Driver Model）：前の車と停止線を「止まっている前車」として扱う
+function idm(v,v0,s,dv,s0){const T=1.1,A=1.8,Bc=2.6;const ss=s0+Math.max(0,v*T+v*dv/(2*Math.sqrt(A*Bc)));return A*(1-Math.pow(v/Math.max(v0,.1),4)-Math.pow(ss/Math.max(s,.05),2));}
+function drive(v,dt,leader,leaderDist,stopDist){
+  let a=1.8*(1-Math.pow(v.v/Math.max(v.vmax,.1),4));
+  if(leader){const gap=leaderDist-(v.len+leader.len)/2;a=Math.min(a,idm(v.v,v.vmax,gap,v.v-leader.v,2.2));}
+  if(stopDist!=null)a=Math.min(a,idm(v.v,v.vmax,stopDist,v.v,.9));
+  a=clamp(a,-9,1.8);v.v=Math.max(0,v.v+a*dt);v.a=a;
+  v.brake=a<-.6||(v.v<.3&&a<.2);
+}
+function spawnSame(v,zAt){v.active=true;v.commit=null;v.lane='same';v.dir=[0,-1];v.x=-LANE;v.z=zAt;v.vmax=7+Math.random()*6;v.v=v.vmax*.8;v.mesh.visible=true;v.mesh.rotation.y=0;}
+function spawnOpp(v,zAt){v.active=true;v.commit=null;v.lane='opp';v.dir=[0,1];v.x=LANE;v.z=zAt;v.vmax=8+Math.random()*6;v.v=v.vmax;v.mesh.visible=true;v.mesh.rotation.y=Math.PI;}
 function laneFree(lane,x,z,gap){for(const o of vehicles){if(!o.active||o.lane!==lane)continue;if(Math.hypot(o.x-x,o.z-z)<gap)return false;}if(lane==='same'&&Math.abs(ego.z-z)<gap)return false;return true;}
 (function initTraffic(){let z=ego.z-35;vehicles.filter(v=>v.role==='same').forEach((v,k)=>{if(k<3){spawnSame(v,z);z-=60+Math.random()*80;}});
   vehicles.filter(v=>v.role==='opp').forEach((v,k)=>{spawnOpp(v,ego.z-20-k*38-Math.random()*20);});})();
@@ -904,17 +941,17 @@ function updateTraffic(dt){
   // 自車線（同方向）
   const same=[ego,...vehicles.filter(v=>v.active&&v.lane==='same')].sort((a,b)=>b.z-a.z); // 手前→奥
   for(let k=0;k<same.length;k++){const v=same[k];let leader=null,ld=0;for(let j=k+1;j<same.length;j++){leader=same[j];ld=v.z-leader.z;break;}
-    const nx=nextIX(v.z-v.len/2,-1);let sd=null;if(nx&&mustStop(sigMain(nx.p,simT),nx.dist,v.v))sd=nx.dist;
+    const nx=nextIX(v.z-v.len/2,-1);const sd=nx?signalStop(v,nx,nx.dist,'main'):null;
     if(v.isEgo){const zn=ZONES[planAt(Math.floor(-v.z/L)).zone].speed/3.6;v.vmax=lerp(v.vmax,zn,Math.min(1,dt*.4));}
     drive(v,dt,leader,ld,sd);v.z-=v.v*dt;}
   const opp=vehicles.filter(v=>v.active&&v.lane==='opp').sort((a,b)=>a.z-b.z); // 奥→手前（進行方向+z）
   for(let k=0;k<opp.length;k++){const v=opp[k];let leader=null,ld=0;if(k+1<opp.length){leader=opp[k+1];ld=leader.z-v.z;}
-    const nx=nextIX(v.z+v.len/2,1);let sd=null;if(nx&&mustStop(sigMain(nx.p,simT),nx.dist,v.v))sd=nx.dist;drive(v,dt,leader,ld,sd);v.z+=v.v*dt;}
+    const nx=nextIX(v.z+v.len/2,1);const sd=nx?signalStop(v,nx,nx.dist,'main'):null;drive(v,dt,leader,ld,sd);v.z+=v.v*dt;}
   // 横道
   const crossLanes={};for(const v of vehicles){if(v.active&&v.lane&&v.lane.startsWith('x')){(crossLanes[v.lane]=crossLanes[v.lane]||[]).push(v);}}
   for(const key in crossLanes){const arr=crossLanes[key];const dx=arr[0].dir[0];arr.sort((a,b)=>(a.x-b.x)*dx);
     for(let k=0;k<arr.length;k++){const v=arr[k];let leader=null,ld=0;if(k+1<arr.length){leader=arr[k+1];ld=(leader.x-v.x)*dx;}
-      const stopX=dx>0?-10.3:10.3;const dist=(stopX-(v.x+dx*v.len/2))*dx;let sd=null;if(mustStop(sigCross(v.ix.p,simT),dist,v.v))sd=dist;drive(v,dt,leader,ld,sd);v.x+=dx*v.v*dt;}}
+      const stopX=dx>0?-10.3:10.3;const dist=(stopX-(v.x+dx*v.len/2))*dx;const sd=signalStop(v,v.ix,dist,'cross');drive(v,dt,leader,ld,sd);v.x+=dx*v.v*dt;}}
   // 出入り
   for(const v of vehicles){if(!v.active)continue;
     if(v.lane==='same'&&(v.z<ego.z-470)){v.active=false;v.mesh.visible=false;}
@@ -926,7 +963,7 @@ function updateTraffic(dt){
     ix.spawnT=(ix.spawnT==null?Math.random()*3:ix.spawnT)-dt;if(ix.spawnT>0)continue;ix.spawnT=2.5+Math.random()*6;
     const v=vehicles.find(o=>!o.active&&o.role==='cross');if(!v)break;const east=Math.random()<.5;const lane='x'+(east?'E':'W')+ix.zc;
     const x=east?-118:118,z=ix.zc+(east?-2:2);if(!laneFree(lane,x,z,14))continue;
-    v.active=true;v.lane=lane;v.ix=ix;v.dir=[east?1:-1,0];v.x=x;v.z=z;v.vmax=9+Math.random()*4;v.v=v.vmax;v.mesh.visible=true;v.mesh.rotation.y=east?-Math.PI/2:Math.PI/2;}
+    v.active=true;v.commit=null;v.lane=lane;v.ix=ix;v.dir=[east?1:-1,0];v.x=x;v.z=z;v.vmax=9+Math.random()*4;v.v=v.vmax;v.mesh.visible=true;v.mesh.rotation.y=east?-Math.PI/2:Math.PI/2;}
 }
 function vehLights(v,x,z,ry,night,isEgo){
   const L_=v.lights||EGO_LIGHTS;const c=Math.cos(ry),s=Math.sin(ry);const tw=(lx,ly,lz,col,k,size,kind)=>{dyn.push(x+lx*c+lz*s,ly,z-lx*s+lz*c,col.r*k,col.g*k,col.b*k,size,kind);};
@@ -1021,6 +1058,8 @@ function frame(now){
   for(const c of chunks.values()){const ix=c.ix;if(!ix)continue;const sm=sigMain(ix.p,simT),scx=sigCross(ix.p,simT);
     for(const hd of ix.heads){const st=hd.key==='main'?sm:scx;const idx=st==='G'?0:st==='Y'?1:2;
       hd.lamps.forEach((m,k)=>{m.material=k===idx?(idx===0?MAT.sigG:idx===1?MAT.sigY:MAT.sigR):MAT.sigOff;});
+      if(hd.arrows){const on=st==='A';hd.arrows.forEach((m,k)=>{const lit=on&&k<2;m.material=lit?ARROW_ON[k]:ARROW_OFF[k];
+        if(lit){const g=SIG_COL.G,kk2=.25+E.night*.7;dyn.push(m.position.x+Math.sin(hd.ry)*.1,m.position.y,m.position.z+Math.cos(hd.ry)*.1,g.r*kk2,g.g*kk2,g.b*kk2,.8+E.night*.4,GK.ALWAYS);}});}
       const lm=hd.lamps[idx].position,col=SIG_COL[st];const kk=.35+E.night*.9;const fx=Math.sin(hd.ry)*.12,fz=Math.cos(hd.ry)*.12;
       dyn.push(lm.x+fx,lm.y,lm.z+fz,col.r*kk,col.g*kk,col.b*kk,1.1+E.night*.6,GK.ALWAYS);}}
   dyn.commit();
@@ -1038,7 +1077,7 @@ function updateHUD(){
   $('phase').textContent=phaseName(clockH);$('spd').textContent=String(Math.round(ego.v*3.6));
   const pl=planAt(Math.floor(-ego.z/L));const Z=ZONES[pl.zone];if(lastZone!==pl.zone){$('zone').textContent=Z.name;$('zoneEn').textContent=Z.en;if(lastZone){const pe=$('plate');pe.classList.remove('flash');void pe.offsetWidth;pe.classList.add('flash');}lastZone=pl.zone;}
   const nx=nextIX(ego.z,-1);if(nx){$('xname').textContent=nx.p.jp;$('xroman').textContent=nx.p.en.trim();$('xdist').textContent=Math.max(0,Math.round(nx.dist))+' m';
-    const st=sigMain(nx.p,simT);$('sigdot').style.background=st==='G'?'#2fe0b8':st==='Y'?'#ffc21a':'#ff3a2a';}
+    const st=sigMain(nx.p,simT);const dot=$('sigdot');dot.style.background=st==='G'?'#2fe0b8':st==='Y'?'#ffc21a':'#ff3a2a';dot.style.boxShadow=st==='A'?'0 0 0 2px #2fe0b8':'0 0 0 2px rgba(255,255,255,.12)';dot.title=st==='A'?'前方の信号：赤（直進・左折矢印）':'前方の信号';}
   refreshPresetButtons();
 }
 
